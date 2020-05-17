@@ -18,7 +18,7 @@ import tensorflow.keras.activations as tfka
 
 from analog_util import *
 
-class GridRDQN_NN(object):
+class AnalogStateRDQN_NN(object):
     def __init__(self,
                  q_size,
                  topology_size,
