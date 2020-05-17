@@ -17,8 +17,8 @@ rm -rf ./logs-train/$ASRDQN_NAME
 ./train.py \
     --name $ASRDQN_NAME \
     --data_dir $ASRDQN_DATA \
-    --num_pre_steps 256 \
-    --num_train_steps 131072 \
+    --num_pre_steps 16000 \
+    --num_train_steps 256000 \
     --trace_length 12
 
 rm -rf ./logs-eval/$ASRDQN_NAME
