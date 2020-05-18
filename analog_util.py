@@ -155,7 +155,6 @@ def act_setbus_to_netbus(obs, act_setbus, n_bus=2):
     
     return net_bus
 
-
 def netline_rnd(obs):
     rnd_lines = obs.line_status.astype(np.float32)
     rnd_lineid = np.random.randint(obs.n_line)
