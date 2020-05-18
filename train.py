@@ -123,7 +123,7 @@ if __name__ == "__main__":
     cr.addReward("game", GameplayReward(), 2.0)
     #cr.addReward("eco", EconomicReward(), 2.0)
     cr.addReward("reco", LinesReconnectedReward(), 1.0)
-    cr.set_range(0.0, 1.0)
+    cr.set_range(0.0, 10.0)
     # Initialize custom rewards
     cr.initialize(env)
 

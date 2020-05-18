@@ -16,7 +16,7 @@ import tensorflow.keras.optimizers as tfko
 import tensorflow.keras.layers as tfkl
 import tensorflow.keras.activations as tfka
 
-from analog_util import *
+from grid2op.Converter import AnalogStateConverter as analog
 
 class AnalogStateRDQN_NN(object):
     def __init__(self,
@@ -26,7 +26,8 @@ class AnalogStateRDQN_NN(object):
                  dispatch_size,
                  observation_size,
                  n_bus = 2,                 
-                 learning_rate = 1e-5):
+                 learning_rate = 1e-5,
+                 is_training = False):
         self.q_size = q_size
         self.n_bus = n_bus
         self.topo_size = topology_size
@@ -36,6 +37,7 @@ class AnalogStateRDQN_NN(object):
         self.encoded_size = 384
         self.h_size = 512
         self.lr = learning_rate
+        self.is_training = is_training
         self.model = None
         self.construct_q_network()
 
@@ -83,7 +85,7 @@ class AnalogStateRDQN_NN(object):
 
     def forward_vec(self, hidden, out_size, name):
         # Always add some noise to spread outputs
-        noisy = tfkl.GaussianDropout(0.2)(hidden, True)
+        noisy = tfkl.GaussianDropout(0.2)(hidden, self.is_training)
         
         # Decode to partial state vec
         vec_1 = tfkl.Dense(out_size * 2, name=name+"_fc1_vec")(noisy)
@@ -155,6 +157,7 @@ class AnalogStateRDQN_NN(object):
         l_vec = self.forward_vec(hidden, l_size, "line")
         l_vec = tf.nn.relu(l_vec, name="line_relu")
         l = tf.reshape(l_vec, l_shape, name="shape_line")
+        print("l shape =", l.shape)
 
         # Redispatch
         d_size = self.q_size * self.disp_size
@@ -170,7 +173,7 @@ class AnalogStateRDQN_NN(object):
         ql = tfkl.Flatten(name="q_l_flat")(l)
         qd = tfkl.Flatten(name="q_d_flat")(d)
         h_concat = tf.concat([qt, ql, qd, hidden], 1, name="Q_concat")
-        print (h_concat.shape)
+        print ("concat", h_concat.shape)
         q = self.forward_streams(h_concat, self.q_size, "Q")
         print ("q shape =", q.shape)
 
@@ -266,13 +269,13 @@ class AnalogStateRDQN_NN(object):
         # Random action type selection
         if rnd_type == 0:
             # Take random changes on topology
-            rnd_bus[:] = netbus_rnd(obs)[:]
+            rnd_bus[:] = analog.netbus_rnd(obs)[:]
         elif rnd_type == 1:
             # Switch a random line status
-            rnd_line[:] = netline_rnd(obs)[:]
+            rnd_line[:] = analog.netline_rnd(obs)[:]
         else:
             # Take random ramp disp
-            rnd_disp[:] = netdisp_rnd(obs)[:]
+            rnd_disp[:] = analog.netdisp_rnd(obs)[:]
 
         return (rnd_grid, rnd_bus, rnd_line, rnd_disp), pred[4], pred[5]
 

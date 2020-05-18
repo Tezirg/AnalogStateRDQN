@@ -12,40 +12,41 @@ import copy
 import numpy as np
 import tensorflow as tf
 
-from grid2op.Agent import BaseAgent
-from grid2op.Parameters import Parameters
+from grid2op.Agent import AgentWithConverter
+from grid2op.Converter import AnalogStateConverter
 
 from ExperienceBuffer import ExperienceBuffer
 from AnalogStateRDQN_NN import AnalogStateRDQN_NN
-from analog_util import *
 
 INITIAL_EPSILON = 0.80
 FINAL_EPSILON = 0.0
-DECAY_EPSILON = 1024*256
+DECAY_EPSILON = 1024*64
 STEP_EPSILON = (INITIAL_EPSILON-FINAL_EPSILON)/DECAY_EPSILON
 DISCOUNT_FACTOR = 0.99
-REPLAY_BUFFER_SIZE = 1024*8
+REPLAY_BUFFER_SIZE = 1024*4
 UPDATE_FREQ = 256
 UPDATE_TARGET_HARD_FREQ = -1
 UPDATE_TARGET_SOFT_TAU = 0.001
 INPUT_BIAS = 0.0
 SUFFLE_FREQ = 1000
 
-class AnalogStateRDQN(BaseAgent):
+class AnalogStateRDQN(AgentWithConverter):
     def __init__(self,
                  observation_space,
                  action_space,
                  name=__name__,
                  batch_size=1,
                  trace_length=1,
-                 n_grid=8,
+                 n_grid=16,
                  is_training=False,
                  lr=1e-5):
         # Call parent constructor
-        super().__init__(action_space)
+        super().__init__(action_space,
+                         action_space_converter=AnalogStateConverter)
 
         # Store constructor params
         self.observation_space = observation_space
+        self.obs_space = observation_space
         self.name = name
         self.n_grid = n_grid
         self.trace_length = trace_length
@@ -69,7 +70,8 @@ class AnalogStateRDQN(BaseAgent):
         self.epsilon = INITIAL_EPSILON
 
         # Compute dimensions from intial state
-        self.observation_size = size_obs(self.observation_space)
+        self.observation_size = AnalogStateConverter.size_obs(self.obs_space)
+        print("Observation_size = ", self.observation_size)
 
         # Load network graph
         self.Qmain = AnalogStateRDQN_NN(self.n_grid,
@@ -77,7 +79,8 @@ class AnalogStateRDQN(BaseAgent):
                                         self.observation_space.n_line,
                                         self.observation_space.n_gen,
                                         self.observation_size,
-                                        learning_rate = self.lr)
+                                        learning_rate = self.lr,
+                                        is_training = self.is_training)
         # Setup training vars if needed
         if self.is_training:
             self._init_training()
@@ -90,12 +93,15 @@ class AnalogStateRDQN(BaseAgent):
         self.done = True
         self.epoch_rewards = []
         self.epoch_alive = []
+        self.epoch_illegal = []
+        self.epoch_ambiguous = []
         self.Qtarget = AnalogStateRDQN_NN(self.n_grid,
                                           self.observation_space.dim_topo,
                                           self.observation_space.n_line,
                                           self.observation_space.n_gen,
                                           self.observation_size,
-                                          learning_rate = self.lr)
+                                          learning_rate = self.lr,
+                                          is_training = self.is_training)
 
     def _reset_state(self, current_obs):
         # Initial state
@@ -143,17 +149,16 @@ class AnalogStateRDQN(BaseAgent):
 
     ## Agent Interface
     def convert_obs(self, observation):
-        return analog_convert_obs(observation, bias=INPUT_BIAS)
+        return super().convert_obs(observation)
 
     def convert_act(self, netbus, netline, netdisp):
-        act = analog_convert_act(self.action_space, self.obs,
-                                 netbus, netline, netdisp)
-        return act
+        netstate = (netbus, netline, netdisp)
+        return super().convert_act(netstate)
 
     def reset(self, observation):
         self._reset_state(observation)
 
-    def act(self, observation, reward, done=False):
+    def my_act(self, observation, reward, done=False):
         self.obs = observation
         state = self.convert_obs(observation)
         net_pred = self.Qmain.predict_move(state,
@@ -190,6 +195,8 @@ class AnalogStateRDQN(BaseAgent):
         alive_steps = 0
         total_reward = 0
         episode = 0
+        episode_illegal = 0
+        episode_ambiguous = 0
         episode_exp = []
 
         # Create file system related vars
@@ -243,6 +250,10 @@ class AnalogStateRDQN(BaseAgent):
             act = self.convert_act(pred[0][1], pred[0][2], pred[0][3])
             # Execute action
             new_obs, reward, self.done, info = env.step(act)
+            if info["is_illegal"]:
+                episode_illegal += 1
+            if info["is_ambiguous"]:
+                episode_ambiguous += 1
             new_state = self.convert_obs(new_obs)
 
             # Save to current episode experience
@@ -259,7 +270,7 @@ class AnalogStateRDQN(BaseAgent):
 
             # Perform training at given frequency
             if step % UPDATE_FREQ == 0 and self.exp_buffer.can_sample():
-                training_step = step - num_pre_training_steps
+                training_step = (step / UPDATE_FREQ)
                 # Sample from experience buffer
                 batch = self.exp_buffer.sample()
                 # Perform training
@@ -279,10 +290,14 @@ class AnalogStateRDQN(BaseAgent):
             if self.done:
                 self.epoch_rewards.append(total_reward)
                 self.epoch_alive.append(alive_steps)
+                self.epoch_illegal.append(episode_illegal)
+                self.epoch_ambiguous.append(episode_ambiguous)
                 print("Survived [{}] steps".format(alive_steps))
                 print("Total reward [{}]".format(total_reward))
                 alive_steps = 0
                 total_reward = 0
+                episode_illegal = 0
+                episode_ambiguous = 0
             else:
                 alive_steps += 1
 
@@ -303,16 +318,38 @@ class AnalogStateRDQN(BaseAgent):
         with self.tf_writer.as_default():
             mean_reward = np.mean(self.epoch_rewards)
             mean_alive = np.mean(self.epoch_alive)
+            mean_illegal = np.mean(self.epoch_illegal)
+            mean_ambiguous = np.mean(self.epoch_ambiguous)
+            mean_reward_10 = mean_reward
+            mean_alive_10 = mean_alive
+            mean_illegal_10 = mean_illegal
+            mean_ambiguous_10 = mean_ambiguous
+            mean_reward_100 = mean_reward
+            mean_alive_100 = mean_alive
+            mean_illegal_100 = mean_illegal
+            mean_ambiguous_100 = mean_ambiguous
+            if len(self.epoch_rewards) >= 10:
+                mean_reward_10 = np.mean(self.epoch_rewards[-10:])
+                mean_alive_10 = np.mean(self.epoch_alive[-10:])
+                mean_illegal_10 = np.mean(self.epoch_illegal[-10:])
+                mean_ambiguous_10 = np.mean(self.epoch_ambiguous[-10:])
             if len(self.epoch_rewards) >= 100:
                 mean_reward_100 = np.mean(self.epoch_rewards[-100:])
                 mean_alive_100 = np.mean(self.epoch_alive[-100:])
-            else:
-                mean_reward_100 = mean_reward
-                mean_alive_100 = mean_alive
+                mean_illegal_100 = np.mean(self.epoch_illegal[-100:])
+                mean_ambiguous_100 = np.mean(self.epoch_ambiguous[-100:])
             tf.summary.scalar("mean_reward", mean_reward, step)
-            tf.summary.scalar("mean_alive", mean_alive, step)
             tf.summary.scalar("mean_reward_100", mean_reward_100, step)
+            tf.summary.scalar("mean_reward_10", mean_reward_10, step)
+            tf.summary.scalar("mean_alive", mean_alive, step)
             tf.summary.scalar("mean_alive_100", mean_alive_100, step)
+            tf.summary.scalar("mean_alive_10", mean_alive_10, step)
+            tf.summary.scalar("mean_illegal", mean_illegal, step)
+            tf.summary.scalar("mean_illegal_100", mean_illegal_100, step)
+            tf.summary.scalar("mean_illegal_10", mean_illegal_10, step)
+            tf.summary.scalar("mean_ambiguous", mean_ambiguous, step)
+            tf.summary.scalar("mean_ambiguous_100", mean_ambiguous_100, step)
+            tf.summary.scalar("mean_ambiguous_10", mean_ambiguous_10, step)
             tf.summary.scalar("loss", loss, step)
         
     def _batch_train(self, batch, training_step, step):
